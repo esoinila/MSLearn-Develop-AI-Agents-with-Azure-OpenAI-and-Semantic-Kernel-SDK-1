@@ -50,12 +50,7 @@ async Task<string> RetrieveAndAugmentAsync(string userQuery)
     // 1. Retrieve relevant documents from Azure AI Search
     var searchOptions = new SearchOptions
     {
-        Size = 3, // Get top 3 results
-        QueryType = SearchQueryType.Semantic,
-        SemanticConfigurationName = "default", // Your semantic config name
-        QueryLanguage = "en-us",
-        QueryAnswer = QueryAnswer.None,
-        QueryCaption = QueryCaption.None
+        Size = 3 // Get top 3 results
     };
 
     searchOptions.Select.Add("content");
@@ -67,11 +62,24 @@ async Task<string> RetrieveAndAugmentAsync(string userQuery)
     var contextBuilder = new StringBuilder();
     contextBuilder.AppendLine("Here is some relevant information that might help answer the query:");
     
-    await foreach (var result in searchResults.GetResultsAsync())
+    var results = searchResults.Value.GetResults();
+    foreach (var result in results)
     {
         var document = result.Document;
-        if (document.TryGetValue("title", out string? title) && 
-            document.TryGetValue("content", out string? content))
+        string title = "";
+        string content = "";
+        
+        if (document.TryGetValue("title", out object? titleObj))
+        {
+            title = titleObj?.ToString() ?? "";
+        }
+        
+        if (document.TryGetValue("content", out object? contentObj))
+        {
+            content = contentObj?.ToString() ?? "";
+        }
+        
+        if (!string.IsNullOrEmpty(title) || !string.IsNullOrEmpty(content))
         {
             contextBuilder.AppendLine($"Title: {title}");
             contextBuilder.AppendLine($"Content: {content}");

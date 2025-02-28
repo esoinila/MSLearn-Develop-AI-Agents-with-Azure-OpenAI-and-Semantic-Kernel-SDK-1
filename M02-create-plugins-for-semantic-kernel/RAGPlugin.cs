@@ -23,29 +23,46 @@ public class RAGPlugin
     {
         var searchOptions = new SearchOptions
         {
-            Size = 3,
-            QueryType = SearchQueryType.Semantic,
-            SemanticConfigurationName = "default",
-            QueryLanguage = "en-us"
+            Size = 3
         };
 
+        // Add select fields if your index has specific fields
         searchOptions.Select.Add("content");
         searchOptions.Select.Add("title");
 
-        var searchResults = await _searchClient.SearchAsync<SearchDocument>(query, searchOptions);
+        var searchResult = await _searchClient.SearchAsync<SearchDocument>(query, searchOptions);
         
         var contextBuilder = new StringBuilder();
         
-        await foreach (var result in searchResults.GetResultsAsync())
+        var results = searchResult.Value.GetResults();
+        
+        foreach (var result in results)
         {
             var document = result.Document;
-            if (document.TryGetValue("title", out string? title) && 
-                document.TryGetValue("content", out string? content))
+            string title = "";
+            string content = "";
+            
+            if (document.TryGetValue("title", out object? titleObj))
+            {
+                title = titleObj?.ToString() ?? "";
+            }
+            
+            if (document.TryGetValue("content", out object? contentObj))
+            {
+                content = contentObj?.ToString() ?? "";
+            }
+            
+            if (!string.IsNullOrEmpty(title))
             {
                 contextBuilder.AppendLine($"Title: {title}");
-                contextBuilder.AppendLine($"Content: {content}");
-                contextBuilder.AppendLine();
             }
+            
+            if (!string.IsNullOrEmpty(content))
+            {
+                contextBuilder.AppendLine($"Content: {content}");
+            }
+            
+            contextBuilder.AppendLine();
         }
         
         return contextBuilder.ToString();
