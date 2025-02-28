@@ -3,7 +3,12 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
 using Microsoft.SemanticKernel.PromptTemplates.Handlebars;
-
+using Microsoft.SemanticKernel.Memory;
+using Microsoft.SemanticKernel.Connectors.AzureAISearch;
+using Azure;
+using Azure.Search.Documents;
+using Azure.Search.Documents.Models;
+using System.Text;
 
 string filePath = Path.GetFullPath("../../appsettings.json");
 var config = new ConfigurationBuilder()
@@ -15,9 +20,11 @@ string modelId = config["modelId"]!;
 string endpoint = config["endpoint"]!;
 string apiKey = config["apiKey"]!;
 
-//
-// Add your code
-//
+// Azure AI Search configuration
+string searchEndpoint = config["azureAISearch:endpoint"]!;
+string searchApiKey = config["azureAISearch:apiKey"]!;
+string indexName = config["azureAISearch:indexName"]!;
+
 // Create a kernel with Azure OpenAI chat completion
 var builder = Kernel.CreateBuilder();
 builder.AddAzureOpenAIChatCompletion(modelId, endpoint, apiKey);
@@ -28,9 +35,52 @@ Kernel kernel = builder.Build();
 // Get chat completion service.
 var chatCompletionService = kernel.GetRequiredService<IChatCompletionService>();
 
+// Create search client for RAG
+var searchClient = new SearchClient(
+    new Uri(searchEndpoint),
+    indexName,
+    new AzureKeyCredential(searchApiKey));
+
 // Create a chat history object
 ChatHistory chatHistory = [];
 
+// Function to perform RAG search and augment the prompt
+async Task<string> RetrieveAndAugmentAsync(string userQuery)
+{
+    // 1. Retrieve relevant documents from Azure AI Search
+    var searchOptions = new SearchOptions
+    {
+        Size = 3, // Get top 3 results
+        QueryType = SearchQueryType.Semantic,
+        SemanticConfigurationName = "default", // Your semantic config name
+        QueryLanguage = "en-us",
+        QueryAnswer = QueryAnswer.None,
+        QueryCaption = QueryCaption.None
+    };
+
+    searchOptions.Select.Add("content");
+    searchOptions.Select.Add("title");
+
+    var searchResults = await searchClient.SearchAsync<SearchDocument>(userQuery, searchOptions);
+    
+    // 2. Format the retrieved content to augment the prompt
+    var contextBuilder = new StringBuilder();
+    contextBuilder.AppendLine("Here is some relevant information that might help answer the query:");
+    
+    await foreach (var result in searchResults.GetResultsAsync())
+    {
+        var document = result.Document;
+        if (document.TryGetValue("title", out string? title) && 
+            document.TryGetValue("content", out string? content))
+        {
+            contextBuilder.AppendLine($"Title: {title}");
+            contextBuilder.AppendLine($"Content: {content}");
+            contextBuilder.AppendLine();
+        }
+    }
+    
+    return contextBuilder.ToString();
+}
 
 void AddMessage(string msg) {
     Console.WriteLine(msg);
@@ -43,12 +93,29 @@ void GetInput() {
 }
 
 async Task GetReply() {
+    // Get the last user message
+    string userQuery = chatHistory.Last(m => m.Role == AuthorRole.User).Content!;
+    
+    // Retrieve context from Azure AI Search
+    string retrievedContext = await RetrieveAndAugmentAsync(userQuery);
+    
+    // Add a system message with the RAG context (but don't show it to the user)
+    chatHistory.Insert(chatHistory.Count - 1, new ChatMessageContent(
+        AuthorRole.System,
+        $"Use the following information to help answer the user's question, but don't explicitly mention that you're using this retrieved information: {retrievedContext}"
+    ));
+    
+    // Get completion with the augmented context
     ChatMessageContent reply = await chatCompletionService.GetChatMessageContentAsync(
         chatHistory,
         kernel: kernel
     );
+    
     Console.WriteLine(reply.ToString());
     chatHistory.AddAssistantMessage(reply.ToString());
+    
+    // Remove the RAG context message to keep the history clean for further interactions
+    chatHistory.RemoveAt(chatHistory.Count - 3);
 }
 
 // Prompt the LLM
@@ -59,7 +126,6 @@ chatHistory.AddSystemMessage("Recommend a destination to the traveler based on t
 AddMessage("Tell me about your travel plans.");
 GetInput();
 await GetReply();
-
 
 // Offer recommendations
 AddMessage("Would you like some activity recommendations?");
